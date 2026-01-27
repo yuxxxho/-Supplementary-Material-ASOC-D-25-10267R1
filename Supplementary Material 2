@@ -1,0 +1,82 @@
+Supplementary Material 2:Complete Pseudo-code for H2OML
+    # ================= Configuration Parameters =================
+    train_ratio ← 0.7                # Proportion of training set
+    random_seed ← 42              # Random seed for reproducibility
+    max_runtime_secs ← 600         # Maximum runtime for H2O AutoML (seconds)
+    sort_metric ← MAE             # Metric used to rank models
+    top_features_per_model ← 10     # Number of top features per model
+    top_aggregate_features ← 15     # Number of top features for aggregate importance
+    target_column ← "Gas close"      # Prediction target
+    time_column ← "Date"           # Time column
+
+    # ================= Step 1: Load and Process Data =================
+    data ← Read Excel(FilePath)
+    Convert data[time_column] to datetime
+    Sort data by time_column ascending
+    feature_columns ← All columns in data excluding target_column and time_column
+
+    # ================= Step 2: Time-based Train/Test Split =================
+    total_samples ← Number of rows in data
+    train_samples ← floor(total_samples * train_ratio)
+    train_data ← data[1 to train_samples]
+    test_data ← data[train_samples+1 to total_samples]
+
+    # Convert to H2OFrame
+    H2O_train ← Convert to H2OFrame(train_data)
+    H2O_test ← Convert to H2OFrame(test_data)
+
+    # ================= Step 3: Initialize H2O AutoML =================
+    Initialize H2O AutoML with:
+        - max_runtime_secs = max_runtime_secs
+        - seed = random_seed
+        - sort_metric = sort_metric
+    Train AutoML on H2O_train:
+        - Inputs = feature_columns
+        - Output = target_column
+
+    # ================= Step 4: Get Leaderboard =================
+    leaderboard ← AutoML leaderboard
+    model_ids ← List of all model IDs in leaderboard
+
+    # ===========Step 5: Model Evaluation and Feature Importance ==========
+    For each model_id in model_ids:
+        model ← Load model(model_id)
+        
+        # Evaluate on test set
+        performance ← Compute MAE, RMSE, MSE, R2 on H2O_test
+        Record performance with model_id
+
+        # Feature importance
+        var_importance ← Get feature importance of model
+        If var_importance exists:
+            top_features ← Select top top_features_per_model features by importance
+            Record var_importance and top_features
+        Else:
+            Record var_importance as None
+        End If
+    End For
+
+    # ==========Step 6: Compute Aggregate Feature Importance ===============
+    all_var_importance ← Collect feature importance from all models
+    For each feature:
+        avg_importance ← Average importance across models
+        avg_rank ← Average rank across models
+        num_models ← Number of models including the feature
+    Sort features by avg_importance descending
+
+    # ================= Step 7: Plot Feature Importance =================
+    For the top 3 model_ids:
+        Plot feature importance for model (top top_features_per_model)
+    End For
+    Plot aggregate feature importance (top top_aggregate_features)
+
+    # ================= Step 8: Save Results =================
+    Save all model performances to CSV
+    Save aggregate feature importance summary to CSV
+    Save each model's feature importance to CSV
+    Save aggregate feature importance plot (PNG and PDF)
+    Save each model's feature importance plot (PNG and PDF)
+
+    # ================= Step 9: Shutdown H2O =================
+    Shutdown H2O cluster
+End Procedure
