@@ -1,0 +1,386 @@
+Supplementary Material 1: Complete Pseudo-code for
+CEEMDAN-SE-TA-Transformer Algorithm
+====================================================================
+# --- Input Specification ---
+Input:
+    D_raw: Raw time series dataset
+    target_col: Target variable column name (default 'NG1')
+    seq_len: Input sequence length (default 30)
+    pred_len: Prediction horizon (default 1)
+    train_ratio: Training set ratio (default 0.7)
+    test_ratio: Test set ratio (default 0.3)
+    config: Model configuration parameters
+
+# --- Output Specification ---
+Output:
+    predictions: Predicted values for the test set
+    metrics: Dictionary of evaluation metrics (MSE, RMSE, MAE, R²)
+    model: Trained Transformer model instance
+    IMF_groups: Information of IMF merging and reconstruction
+    train_history: Training and validation loss history
+
+# =================Phase 1: Data Loading and Splitting ======================
+Procedure LOAD_AND_SPLIT_DATA(D_raw, target_col, train_ratio, test_ratio):
+    # Load the raw dataset and split strictly by chronological order
+
+    # Step 1.1: Load raw data
+    1: df ← LOAD_CSV(D_raw)
+    2: df['Date'] ← CONVERT_TO_DATETIME(df['Date'])
+    3: df.SET_INDEX('Date')
+    4: n_total ← LENGTH(df)
+
+    # Step 1.2: Split dataset according to specified ratio
+    5: n_train ← FLOOR(n_total * train_ratio)
+    6: n_test ← n_total - n_train
+
+    # Step 1.3: Strict chronological split
+    7: train_df ← df[0:n_train]
+    8: test_df ← df[n_train:]
+
+    9: PRINT(f"Data split: train={n_train}, test={n_test}")
+    10: RETURN train_df, test_df
+
+# ===============Phase 2: CEEMDAN-SE Signal Reconstruction ===============
+Procedure CEEMDAN_SE_RECONSTRUCTION(series):
+    # Decompose the series using CEEMDAN and reconstruct using sample entropy similarity
+
+    # Step 2.1: CEEMDAN decomposition
+    1: ceemdan ← CEEMDAN()
+    2: IMFs ← ceemdan(series)
+    3: n ← LENGTH(IMFs)
+    4: PRINT(f"CEEMDAN decomposition yielded {n} IMF components")
+
+    # Step 2.2: Calculate sample entropy for each IMF
+    5: SE_values ← []
+    6: FOR i = 0 TO n-1 DO
+    7:     se_i ← SAMPLE_ENTROPY(IMFs[i], m=2, r=0.2)
+    8:     SE_values.APPEND(se_i)
+    9: END FOR
+
+    # Step 2.3: Prepare parameters for merging
+    10: max_C ← MAX(SE_values)
+    11: min_C ← MIN(SE_values)
+
+    # Step 2.4: Group IMFs by sample entropy similarity
+    12: sorted_indices ← ARGSORT(SE_values)  # ascending order
+    13: IMF_groups ← []
+    14: current_group ← []
+
+    15: FOR idx IN sorted_indices DO
+    16:     current_SE ← SE_values[idx]
+    17:     IF LENGTH(current_group) == 0 THEN
+    18:         current_group.APPEND(idx)
+    19:     ELSE
+    20:         group_avg_SE ← MEAN([SE_values[i] FOR i IN current_group])
+    21:         IF ABS(current_SE - group_avg_SE) <= 0.1 * (max_C - min_C) THEN
+    22:             current_group.APPEND(idx)
+    23:         ELSE
+    24:             IMF_groups.APPEND(current_group)
+    25:             current_group ← [idx]
+    26:         END IF
+    27:     END IF
+    28: END FOR
+
+    29: IF LENGTH(current_group) > 0 THEN
+    30:     IMF_groups.APPEND(current_group)
+    31: END IF
+
+    # Step 2.5: Verify merging condition and reconstruct components
+    32: final_components ← []
+    33: final_groups ← []
+
+    34: FOR EACH group IN IMF_groups DO
+    35:     k ← LENGTH(group)
+    36:     IF k == 1 THEN
+    37:         final_components.APPEND(IMFs[group[0]])
+    38:         final_groups.APPEND(group)
+    39:     ELSE
+    40:         merged_component ← SUM([IMFs[idx] FOR idx IN group])
+    41:         merged_SE ← SAMPLE_ENTROPY(merged_component, m=2, r=0.2)
+    42:         threshold ← (max_C - min_C) * n / k
+    43:         IF merged_SE < threshold THEN
+    44:             final_components.APPEND(merged_component)
+    45:             final_groups.APPEND(group)
+    46:         ELSE
+    47:             FOR idx IN group DO
+    48:                 final_components.APPEND(IMFs[idx])
+    49:                 final_groups.APPEND([idx])
+    50:             END FOR
+    51:         END IF
+    52:     END IF
+    53: END FOR
+
+    # Step 2.6: Reconstruct signal
+    54: reconstructed_signal ← SUM(final_components)
+    55: PRINT(f"Reconstruction completed: {n} IMFs → {LENGTH(final_components)} components")
+    56: RETURN reconstructed_signal, final_components, final_groups
+
+# ===================Phase 3: Sequence Construction ======================
+Procedure CREATE_SEQUENCES(df, target_col, seq_len, pred_len, features=None, decay_factor=10.0):
+    # Generate input-output sequences using sliding windows and exponential time decay
+
+    # Step 3.1: Prepare feature matrix
+    1: feature_cols ← [col FOR col IN df.COLUMNS IF col != target_col]
+    2: IF features IS NOT NULL THEN
+    3:     all_features ← CONCATENATE([df[feature_cols].VALUES] + [f.RESHAPE(-1,1) FOR f IN features], axis=1)
+    4: ELSE
+    5:     all_features ← df[feature_cols].VALUES
+    6: END IF
+
+    # Step 3.2: Standardize features and target
+    7: scaler_X ← STANDARD_SCALER()
+    8: scaler_y ← STANDARD_SCALER()
+    9: X_scaled ← scaler_X.FIT_TRANSFORM(all_features)
+    10: y_scaled ← scaler_y.FIT_TRANSFORM(df[target_col].VALUES.RESHAPE(-1,1)).FLATTEN()
+
+    # Step 3.3: Create sliding window sequences
+    11: X_sequences, y_sequences, time_decay_sequences ← [], [], []
+    12: n_samples ← LENGTH(X_scaled)
+
+    13: FOR i = 0 TO n_samples - seq_len - pred_len DO
+    14:     seq_x ← X_scaled[i:i+seq_len]
+    15:     IF pred_len == 1 THEN
+    16:         seq_y ← y_scaled[i+seq_len]
+    17:     ELSE
+    18:         seq_y ← y_scaled[i+seq_len:i+seq_len+pred_len]
+    19:     END IF
+
+    # Step 3.4: Generate exponential time decay sequence
+    20:     time_decay ← [EXP(-(seq_len-j)/decay_factor) FOR j IN RANGE(seq_len)]
+    21:     X_sequences.APPEND(seq_x)
+    22:     y_sequences.APPEND(seq_y)
+    23:     time_decay_sequences.APPEND(time_decay)
+    24: END FOR
+
+    25: PRINT(f"Total sequences created: {LENGTH(X_sequences)} with decay factor={decay_factor}")
+    26: RETURN ARRAY(X_sequences), ARRAY(y_sequences), ARRAY(time_decay_sequences), scaler_X, scaler_y
+
+# ===============Phase 4: Time-Decayed Multi-Head Attention ===============
+Class TimeDecayedMultiHeadAttention:
+
+    Procedure __INIT__(d_model, n_heads, dropout=0.1, decay_factor=10.0):
+        1: self.d_model ← d_model
+        2: self.n_heads ← n_heads
+        3: self.head_dim ← d_model // n_heads
+        4: self.decay_factor ← decay_factor
+        5: self.W_q ← LINEAR(d_model, d_model)
+        6: self.W_k ← LINEAR(d_model, d_model)
+        7: self.W_v ← LINEAR(d_model, d_model)
+        8: self.W_o ← LINEAR(d_model, d_model)
+        9: self.dropout ← DROPOUT(dropout)
+
+    Procedure CREATE_TIME_DECAY_MATRIX(time_diffs):
+        # Create a decay weight matrix from time differences
+        1: batch_size, seq_len ← SHAPE(time_diffs)
+        2: decay_matrix ← ZEROS(batch_size, seq_len, seq_len)
+        3: FOR b IN RANGE(batch_size) DO
+        4:     FOR i IN RANGE(seq_len) DO
+        5:         FOR j IN RANGE(seq_len) DO
+        6:             time_diff ← ABS(time_diffs[b,i]-time_diffs[b,j])
+        7:             decay_matrix[b,i,j] ← EXP(-time_diff/self.decay_factor)
+        8:         END FOR
+        9:     END FOR
+        10: END FOR
+        11: RETURN decay_matrix
+
+    Procedure APPLY_TIME_DECAY(attention_scores, time_diffs):
+        1: decay_matrix ← self.CREATE_TIME_DECAY_MATRIX(time_diffs)
+        2: decay_matrix ← decay_matrix.UNSQUEEZE(1).REPEAT(1,self.n_heads,1,1)
+        3: return attention_scores * decay_matrix
+
+    Procedure FORWARD(x, time_diffs, mask=None):
+        # Compute scaled dot-product attention with time decay
+        1: Q ← self.W_q(x).RESHAPE(batch_size, seq_len, self.n_heads, self.head_dim).TRANSPOSE(1,2)
+        2: K ← self.W_k(x).RESHAPE(batch_size, seq_len, self.n_heads, self.head_dim).TRANSPOSE(1,2)
+        3: V ← self.W_v(x).RESHAPE(batch_size, seq_len, self.n_heads, self.head_dim).TRANSPOSE(1,2)
+        4: scores ← MATMUL(Q, K.TRANSPOSE(-2,-1))/SQRT(self.head_dim)
+        5: scores ← self.APPLY_TIME_DECAY(scores, time_diffs)
+        6: IF mask IS NOT NULL THEN
+        7:     scores ← scores.MASKED_FILL(mask==0, -1e9)
+        8: END IF
+        9: attention_weights ← SOFTMAX(scores, dim=-1)
+        10: attention_weights ← self.dropout(attention_weights)
+        11: output ← MATMUL(attention_weights, V)
+        12: output ← output.TRANSPOSE(1,2).RESHAPE(batch_size, seq_len, self.d_model)
+        13: output ← self.W_o(output)
+        14: RETURN output, attention_weights
+
+# ================Phase 5: Time-Aware Encoder Layer ===============
+Class TimeAwareEncoderLayer:
+
+    Procedure __INIT__(d_model, n_heads, d_ff=128, dropout=0.1, decay_factor=10.0):
+        1: self.attention ← TimeDecayedMultiHeadAttention(d_model, n_heads, dropout, decay_factor)
+        2: self.norm1 ← LAYERNORM(d_model)
+        3: self.norm2 ← LAYERNORM(d_model)
+        4: self.dropout ← DROPOUT(dropout)
+        5: self.ffn ← SEQUENTIAL(LINEAR(d_model,d_ff), RELU(), DROPOUT(dropout), LINEAR(d_ff,d_model), DROPOUT(dropout))
+
+    Procedure FORWARD(x, time_diffs, mask=None):
+        1: attn_output, _ ← self.attention.FORWARD(x,time_diffs,mask)
+        2: x ← self.norm1(x + self.dropout(attn_output))
+        3: ffn_output ← self.ffn(x)
+        4: x ← self.norm2(x + self.dropout(ffn_output))
+        5: RETURN x
+
+#===============Phase 6: CEEMDAN-SE-TA-Transformer Model ===============
+Class CEEMDAN_SE_TA_Transformer:
+
+    Procedure __INIT__(input_dim, seq_len=30, pred_len=1, d_model=64, n_heads=8, n_layers=2, d_ff=128, dropout=0.1, decay_factor=10.0):
+        1: self.input_projection ← LINEAR(input_dim,d_model)
+        2: self.position_encoding ← PARAMETER(ZEROS(1, seq_len, d_model))
+        3: self.encoder_layers ← MODULELIST([TimeAwareEncoderLayer(d_model,n_heads,d_ff,dropout,decay_factor) FOR _ IN RANGE(n_layers)])
+        4: self.output_projection ← LINEAR(d_model,pred_len)
+        5: self.norm ← LAYERNORM(d_model)
+        6: self.dropout ← DROPOUT(dropout)
+
+    Procedure FORWARD(x, time_diffs):
+        1: x ← self.input_projection(x) + self.position_encoding
+        2: FOR layer IN self.encoder_layers DO
+        3:     x ← layer.FORWARD(x,time_diffs)
+        4: END FOR
+        5: x ← self.norm(x)
+        6: last_hidden ← x[:, -1, :]
+        7: predictions ← self.output_projection(last_hidden)
+        8: RETURN predictions
+
+# ====================== Phase 7: Training Procedure ======================
+Procedure TRAIN_MODEL(model, X_train, y_train, t_train, X_val, y_val, t_val, config):
+    # Setup device, optimizer, and early stopping
+    1: device ← "cuda" IF CUDA_AVAILABLE() ELSE "cpu"
+    2: model ← model.TO(device)
+    3: optimizer ← Adam(model.PARAMETERS(), lr=config.learning_rate)
+    4: criterion ← MSELoss()
+    5: scheduler ← ReduceLROnPlateau(optimizer,'min',patience=5,factor=0.5)
+    6: train_loader ← DataLoader(TensorDataset(X_train,y_train,t_train), batch_size=config.batch_size, shuffle=True)
+    7: val_loader ← DataLoader(TensorDataset(X_val,y_val,t_val), batch_size=32, shuffle=False)
+    8: best_val_loss ← INFINITY
+    9: patience_counter ← 0
+    10: train_history ← {'train_loss':[], 'val_loss':[]}
+
+    # Training loop
+    11: FOR epoch IN RANGE(1,config.num_epochs+1):
+    12:     model.TRAIN()
+    13:     train_loss ← 0
+    14:     FOR x_batch,y_batch,t_batch IN train_loader:
+    15:         x_batch,y_batch,t_batch ← x_batch.TO(device), y_batch.TO(device), t_batch.TO(device)
+    16:         optimizer.ZERO_GRAD()
+    17:         predictions ← model.FORWARD(x_batch,t_batch)
+    18:         loss ← criterion(predictions,y_batch)
+    19:         loss.BACKWARD()
+    20:         optimizer.STEP()
+    21:         train_loss += loss.ITEM()
+    22:     END FOR
+    23:     avg_train_loss ← train_loss / LENGTH(train_loader)
+
+    # Validation evaluation
+    24:     model.EVAL()
+    25:     val_loss ← 0
+    26:     WITH NO_GRAD():
+    27:         FOR x_batch,y_batch,t_batch IN val_loader:
+    28:             x_batch,y_batch,t_batch ← x_batch.TO(device), y_batch.TO(device), t_batch.TO(device)
+    29:             predictions ← model.FORWARD(x_batch,t_batch)
+    30:             val_loss += criterion(predictions,y_batch).ITEM()
+    31:         END FOR
+    32:     END WITH
+    33:     avg_val_loss ← val_loss / LENGTH(val_loader)
+    34:     train_history['train_loss'].APPEND(avg_train_loss)
+    35:     train_history['val_loss'].APPEND(avg_val_loss)
+    36:     scheduler.STEP(avg_val_loss)
+
+    # Early stopping
+    37:     IF avg_val_loss < best_val_loss:
+    38:         best_val_loss ← avg_val_loss
+    39:         patience_counter ← 0
+    40:         SAVE_STATE(model,'best_model.pth')
+    41:     ELSE:
+    42:         patience_counter += 1
+    43:     END IF
+    44:     IF patience_counter >= config.patience:
+    45:         PRINT(f"Early stopping at epoch {epoch}")
+    46:         BREAK
+    47:     END IF
+    48: END FOR
+
+    49: model.LOAD_STATE('best_model.pth')
+    50: RETURN model, train_history
+
+# ===================Phase 8: Evaluation Procedure ======================
+Procedure EVALUATE_MODEL(model, X_test, y_test, t_test, scaler_y):
+    # Evaluate model performance on test set
+    1: device ← "cuda" IF CUDA_AVAILABLE() ELSE "cpu"
+    2: model.EVAL()
+    3: test_loader ← DataLoader(TensorDataset(X_test,y_test,t_test), batch_size=32, shuffle=False)
+    4: all_predictions, all_targets ← [], []
+    5: WITH NO_GRAD():
+    6:     FOR x_batch,y_batch,t_batch IN test_loader:
+    7:         x_batch,y_batch,t_batch ← x_batch.TO(device), y_batch.TO(device), t_batch.TO(device)
+    8:         predictions ← model.FORWARD(x_batch,t_batch)
+    9:         all_predictions.EXTEND(predictions.CPU().NUMPY())
+    10:        all_targets.EXTEND(y_batch.CPU().NUMPY())
+    11:     END FOR
+    12: END WITH
+    13: predictions_original ← scaler_y.INVERSE_TRANSFORM(ARRAY(all_predictions).RESHAPE(-1,1))
+    14: targets_original ← scaler_y.INVERSE_TRANSFORM(ARRAY(all_targets).RESHAPE(-1,1))
+    15: metrics ← {
+            'MSE': MEAN_SQUARED_ERROR(targets_original,predictions_original),
+            'RMSE': SQRT(MSE),
+            'MAE': MEAN_ABSOLUTE_ERROR(targets_original,predictions_original),
+            'R2': R2_SCORE(targets_original,predictions_original)
+        }
+    16: RETURN predictions_original, metrics
+
+# ====================Phase 9: Main Algorithm Flow ======================
+Procedure MAIN_ALGORITHM(D_raw, config):
+    1: SET_RANDOM_SEED(config.random_seed)
+    2: train_df,test_df ← LOAD_AND_SPLIT_DATA(D_raw, config.target_col, config.train_ratio, config.test_ratio)
+    3: reconstructed_signal,reconstructed_components,IMF_groups ← CEEMDAN_SE_RECONSTRUCTION(train_df[config.target_col].VALUES)
+    4: train_df[config.target_col] ← reconstructed_signal
+    5: X_train,y_train,t_train,scaler_X,scaler_y ← CREATE_SEQUENCES(train_df,config.target_col,config.seq_len,config.pred_len,reconstructed_components,config.decay_factor)
+    6: X_test,y_test,t_test,_,_ ← CREATE_SEQUENCES(test_df,config.target_col,config.seq_len,config.pred_len)
+    7: input_dim ← SHAPE(X_train)[2]
+    8: model ← CEEMDAN_SE_TA_Transformer(input_dim,config.seq_len,config.pred_len,config.d_model,config.n_heads,config.n_layers,config.d_ff,config.dropout,config.decay_factor)
+    9: trained_model,train_history ← TRAIN_MODEL(model,X_train,y_train,t_train,X_test,y_test,t_test,config)
+    10: predictions,metrics ← EVALUATE_MODEL(trained_model,X_test,y_test,t_test,scaler_y)
+    11: results ← {
+            'predictions': predictions,
+            'metrics': metrics,
+            'model': trained_model,
+            'IMF_groups': IMF_groups,
+            'train_history': train_history,
+            'config': config
+        }
+    12: RETURN results
+
+# ====================== Configuration Parameters ======================
+Config = {
+    'random_seed': 42,
+    'target_col': 'NG1',
+    'seq_len': 30,
+    'pred_len': 1,
+    'train_ratio': 0.7,
+    'test_ratio': 0.3,
+    'se_m': 2,
+    'se_r': 0.2,
+    'similarity_threshold': 0.1,
+    'd_model': 64,
+    'n_heads': 8,
+    'n_layers': 2,
+    'd_ff': 128,
+    'dropout': 0.1,
+    'decay_factor': 10.0,
+    'batch_size': 32,
+    'learning_rate': 0.001,
+    'num_epochs': 300,
+    'patience': 20,
+    'num_repetitions': 10
+}
+
+# ====================== Algorithm Execution ======================
+results ← MAIN_ALGORITHM("natural_gas_data.csv", Config)
+PRINT("Algorithm execution completed")
+PRINT(f"Number of reconstructed IMF groups: {LENGTH(results['IMF_groups'])}")
+PRINT(f"Test performance metrics:")
+PRINT(f"  MSE: {results['metrics']['MSE']:.6f}")
+PRINT(f"  RMSE: {results['metrics']['RMSE']:.6f}")
+PRINT(f"  MAE: {results['metrics']['MAE']:.6f}")
+PRINT(f"  R²: {results['metrics']['R2']:.6f}")
