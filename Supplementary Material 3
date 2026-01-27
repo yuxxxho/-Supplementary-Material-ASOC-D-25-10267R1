@@ -1,0 +1,53 @@
+ Supplementary Material 3: Detailed Description of Data Processing and Splitting Strategy
+====================================================================
+## 1. Data Source and Basic Information
+- Data source: Investing.com, U.S. Energy Information Administration (EIA)
+- Target variable: Natural Gas Continuous Futures (NG1)
+- Feature variables: 17 auxiliary variables (see Table 1 for classification)
+- Time span: January 1, 2014 – January 22, 2024
+- Total trading days: 2,651
+
+## 2. Data Preprocessing Steps
+
+### 2.1 Missing Value Handling
+- Method: Linear interpolation
+- Applied to all 18 variables (1 target + 17 features)
+- Missing value ratio: <2% for each variable
+- Special handling: For missing values at the beginning or end of the series, nearest neighbor imputation is used
+
+### 2.2 Data Standardization
+- Method: Min-Max normalization
+- Formula: X_norm = (X - X_min) / (X_max - X_min)
+- Key principle: Minimum and maximum values are computed only on the training set
+- Avoiding data leakage: Validation and test sets are transformed using training set parameters
+- Normalized range: [0, 1]
+
+## 3. Chronological Data Splitting Strategy
+
+### 3.1 Splitting Principles
+- Maintain strict chronological order to prevent any future information leakage
+- No random shuffling is performed
+- Train/validation/test splits:
+    - Training set: January 1, 2014 – December 31, 2019 (~70% of total data)
+    - Test set: January 1, 2020 – January 22, 2024 (~30% of total data)
+    - Validation set: The last 10% of the training set is used for early stopping and hyperparameter tuning
+
+### 3.2 Sample Construction
+- Sliding window approach:
+    - Input sequence length (seq_len): 30 trading days
+    - Prediction horizon (pred_len): 1 day (for single-step) or multiple days for multi-step forecasting
+    - Step size: 1 day (moving the window forward by 1 day)
+- Each sample:
+    - X: normalized feature matrix of seq_len days
+    - y: target value(s) corresponding to the prediction horizon
+- Optional: Exponential time decay weights applied to past observations to emphasize recent data
+
+### 3.3 Random Seed and Repetition
+- Random seed: 42 (ensures reproducibility of model initialization and training)
+- Number of repetitions: 10 (average results reported to reduce stochastic variability)
+
+
+## 4. Multi-step Forecasting
+- The model supports multi-step prediction by setting pred_len > 1
+- For each input sequence of seq_len days, the target sequence consists of pred_len consecutive future values
+- Sliding window is applied in the same manner to construct multi-step samples
